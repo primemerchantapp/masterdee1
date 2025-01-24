@@ -5,6 +5,9 @@ import { CONFIG } from './config/config.js';
 import { Logger } from './utils/logger.js';
 import { VideoManager } from './video/video-manager.js';
 import { ScreenRecorder } from './video/screen-recorder.js';
+import { search_google, getToolSchema as searchGoogleSchema } from "./tools/search_google.js";
+import { writeFirestoreDocument, getToolSchema as writeFirestoreSchema, initializeFirestore } from "./tools/firestore_writer.js";
+import { initializeWebsocket } from "./core/websocket.js";
 
 /**
  * @fileoverview Main entry point for the application.
@@ -46,7 +49,7 @@ themeToggle.textContent = savedTheme === 'dark' ? 'light_mode' : 'dark_mode';
 themeToggle.addEventListener('click', () => {
     const currentTheme = root.getAttribute('data-theme');
     const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-    
+
     root.setAttribute('data-theme', newTheme);
     localStorage.setItem('theme', newTheme);
     themeToggle.textContent = newTheme === 'dark' ? 'light_mode' : 'dark_mode';
@@ -91,6 +94,23 @@ const CONFIG_PRESETS = {
     }
 };
 
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+    apiKey: "AIzaSyBe9a58zaQCrBSGeWwcIVa_PnZABoH6zV4",
+    authDomain: "tudds-ccd0wn.firebaseapp.com",
+    databaseURL: "https://tudds-ccd0wn-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "tudds-ccd0wn",
+    storageBucket: "tudds-ccd0wn.appspot.com",
+    messagingSenderId: "786974954352",
+    appId: "1:786974954352:web:696d4fce818f14659bb5b5",
+    measurementId: "G-CEQL4E8CW3"
+};
+
+const tools = [
+    { name: "search_google", func: search_google, getToolSchema: searchGoogleSchema },
+    { name: "writeFirestoreDocument", func: writeFirestoreDocument, getToolSchema: writeFirestoreSchema }
+];
+
 /**
  * Updates the configuration and reconnects if connected
  */
@@ -129,7 +149,7 @@ async function updateConfiguration() {
     }
 
     logMessage('Configuration updated successfully', 'system');
-    
+
     // Close the config panel on mobile after applying settings
     if (window.innerWidth <= 768) {
         configContainer.classList.remove('active');
@@ -165,8 +185,8 @@ configToggle.addEventListener('click', () => {
 
 // Close config panel when clicking outside (for desktop)
 document.addEventListener('click', (event) => {
-    if (!configContainer.contains(event.target) && 
-        !configToggle.contains(event.target) && 
+    if (!configContainer.contains(event.target) &&
+        !configToggle.contains(event.target) &&
         window.innerWidth > 768) {
         configContainer.classList.remove('active');
         configToggle.classList.remove('active');
@@ -217,10 +237,10 @@ document.querySelectorAll('.preset-button').forEach(button => {
             voiceSelect.value = preset.voice;
             sampleRateInput.value = preset.sampleRate;
             systemInstructionInput.value = preset.systemInstruction;
-            
+
             // Apply the configuration immediately
             updateConfiguration();
-            
+
             // Visual feedback
             button.style.backgroundColor = 'var(--primary-color)';
             button.style.color = 'white';
@@ -285,12 +305,12 @@ function updateMicIcon() {
 function updateAudioVisualizer(volume, isInput = false) {
     const visualizer = isInput ? inputAudioVisualizer : audioVisualizer;
     const audioBar = visualizer.querySelector('.audio-bar') || document.createElement('div');
-    
+
     if (!visualizer.contains(audioBar)) {
         audioBar.classList.add('audio-bar');
         visualizer.appendChild(audioBar);
     }
-    
+
     audioBar.style.width = `${volume * 100}%`;
     if (volume > 0) {
         audioBar.classList.add('active');
@@ -324,11 +344,11 @@ async function handleMicToggle() {
         try {
             await ensureAudioInitialized();
             audioRecorder = new AudioRecorder();
-            
+
             const inputAnalyser = audioCtx.createAnalyser();
             inputAnalyser.fftSize = 256;
             const inputDataArray = new Uint8Array(inputAnalyser.frequencyBinCount);
-            
+
             await audioRecorder.start((base64Data) => {
                 if (isUsingTool) {
                     client.sendRealtimeInput([{
@@ -342,7 +362,7 @@ async function handleMicToggle() {
                         data: base64Data
                     }]);
                 }
-                
+
                 inputAnalyser.getByteFrequencyData(inputDataArray);
                 const inputVolume = Math.max(...inputDataArray) / 255;
                 updateAudioVisualizer(inputVolume, true);
@@ -351,7 +371,7 @@ async function handleMicToggle() {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             const source = audioCtx.createMediaStreamSource(stream);
             source.connect(inputAnalyser);
-            
+
             await audioStreamer.resume();
             isRecording = true;
             Logger.info('Microphone started');
@@ -384,8 +404,8 @@ async function connectToWebsocket() {
         generationConfig: {
             responseModalities: "audio",
             speechConfig: {
-                voiceConfig: { 
-                    prebuiltVoiceConfig: { 
+                voiceConfig: {
+                    prebuiltVoiceConfig: {
                         voiceName: CONFIG.VOICE.NAME    // You can change voice in the config.js file
                     }
                 }
@@ -397,7 +417,7 @@ async function connectToWebsocket() {
                 text: CONFIG.SYSTEM_INSTRUCTION.TEXT     // You can change system instruction in the config.js file
             }],
         }
-    };  
+    };
 
     try {
         await client.connect(config);
@@ -422,7 +442,11 @@ async function connectToWebsocket() {
         };
         document.addEventListener('click', initAudioHandler);
         logMessage('Audio initialized', 'system');
-        
+
+        // Initialize websocket with function schemas and firebase config
+        initializeWebsocket(client.websocket, tools, firebaseConfig)
+        initializeFirestore(firebaseConfig);
+
     } catch (error) {
         const errorMessage = error.message || 'Unknown error';
         Logger.error('Connection error:', error);
@@ -461,11 +485,11 @@ function disconnectFromWebsocket() {
     cameraButton.disabled = true;
     screenButton.disabled = true;
     logMessage('Disconnected from server', 'system');
-    
+
     if (videoManager) {
         stopVideo();
     }
-    
+
     if (screenRecorder) {
         stopScreenSharing();
     }
@@ -582,14 +606,14 @@ connectButton.textContent = 'Connect';
  */
 async function handleVideoToggle() {
     Logger.info('Video toggle clicked, current state:', { isVideoActive, isConnected });
-    
+
     if (!isVideoActive) {
         try {
             Logger.info('Attempting to start video');
             if (!videoManager) {
                 videoManager = new VideoManager();
             }
-            
+
             await videoManager.start((frameData) => {
                 if (isConnected) {
                     client.sendRealtimeInput([frameData]);
@@ -643,7 +667,7 @@ async function handleScreenShare() {
     if (!isScreenSharing) {
         try {
             screenContainer.style.display = 'block';
-            
+
             screenRecorder = new ScreenRecorder();
             await screenRecorder.start(screenPreview, (frameData) => {
                 if (isConnected) {
@@ -690,4 +714,3 @@ function stopScreenSharing() {
 
 screenButton.addEventListener('click', handleScreenShare);
 screenButton.disabled = true;
-  
